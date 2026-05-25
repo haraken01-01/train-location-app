@@ -157,6 +157,14 @@
 
     let currentAddress = '';
 
+    // iOS Safariの音声制限を解除するため、ユーザー操作の同期タイミングで空発話してアンロックする
+    function unlockSpeech() {
+      if (!window.speechSynthesis) return;
+      const unlock = new SpeechSynthesisUtterance('');
+      unlock.volume = 0;
+      window.speechSynthesis.speak(unlock);
+    }
+
     async function getLocation() {
       const btn = document.getElementById('main-btn');
       const label = document.getElementById('btn-label');
@@ -164,6 +172,9 @@
       const speakBtn = document.getElementById('speak-btn');
 
       if (btn.classList.contains('loading')) return;
+
+      // ユーザー操作の同期処理内でアンロック（非同期になる前に呼ぶ）
+      unlockSpeech();
 
       // 取得中状態
       btn.className = 'loading';
