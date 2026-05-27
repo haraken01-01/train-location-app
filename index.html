@@ -483,9 +483,16 @@
       return data.results[0].formatted_address.replace(/^日本、?/, '');
     }
 
+    function normalizeStationName(name) {
+      const n = name.replace(/[\s　]/g, '');
+      return n.endsWith('駅') ? n : n + '駅';
+    }
+
     async function getNearbyStations(lat, lng) {
-      const query = '[out:json][timeout:15];'
-        + 'node["railway"~"station|halt"](around:1000,' + lat + ',' + lng + ');'
+      const query = '[out:json][timeout:25];'
+        + 'node["railway"~"station|halt"](around:1000,' + lat + ',' + lng + ')->.stations;'
+        + 'rel["route"]["type"="route"](bn.stations)->.routes;'
+        + '(.stations;.routes;);'
         + 'out body;';
       const res = await fetch('https://overpass-api.de/api/interpreter', {
         method: 'POST',
@@ -495,13 +502,33 @@
       if (!res.ok) throw new Error('Overpass error');
       const data = await res.json();
 
+      // Build nodeId -> [line names] from route relations
+      const linesByNode = {};
+      for (const el of data.elements) {
+        if (el.type !== 'relation') continue;
+        const relName = el.tags && el.tags.name;
+        if (!relName) continue;
+        for (const member of (el.members || [])) {
+          if (member.type !== 'node') continue;
+          if (!linesByNode[member.ref]) linesByNode[member.ref] = [];
+          if (!linesByNode[member.ref].includes(relName)) {
+            linesByNode[member.ref].push(relName);
+          }
+        }
+      }
+
       return data.elements
-        .filter(el => el.tags && el.tags.name)
+        .filter(el => el.type === 'node' && el.tags && el.tags.name)
         .map(el => {
           const dist = calcDistance(lat, lng, el.lat, el.lon);
           const bearing = calcBearing(lat, lng, el.lat, el.lon);
-          const line = el.tags.operator || el.tags.network || el.tags['railway:line'] || '';
-          return { name: el.tags.name, line, distance: dist, direction: bearingToDirection(bearing) };
+          const lines = linesByNode[el.id] || [];
+          return {
+            name: normalizeStationName(el.tags.name),
+            line: lines.join('・'),
+            distance: dist,
+            direction: bearingToDirection(bearing)
+          };
         })
         .sort((a, b) => a.distance - b.distance)
         .slice(0, 3);
@@ -519,15 +546,51 @@
       if (!res.ok) throw new Error('Overpass error');
       const data = await res.json();
 
-      return data.elements
+      const raw = data.elements
         .filter(el => el.tags && el.tags.name)
         .map(el => {
           const dist = calcDistance(lat, lng, el.lat, el.lon);
           const bearing = calcBearing(lat, lng, el.lat, el.lon);
-          return { name: el.tags.name, distance: dist, direction: bearingToDirection(bearing) };
+          return { name: el.tags.name, lat: el.lat, lon: el.lon, distance: dist, direction: bearingToDirection(bearing) };
         })
-        .sort((a, b) => a.distance - b.distance)
-        .slice(0, 3);
+        .sort((a, b) => a.distance - b.distance);
+
+      return mergeBusStops(raw);
+    }
+
+    function mergeBusStops(stops) {
+      const groups = {};
+      for (const stop of stops) {
+        const key = stop.name.replace(/[\s　]/g, '');
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(stop);
+      }
+
+      const result = [];
+      for (const group of Object.values(groups)) {
+        if (group.length === 1) {
+          result.push({ name: group[0].name, distance: group[0].distance, direction: group[0].direction, merged: false });
+          continue;
+        }
+        let anyNear = false;
+        outer: for (let i = 0; i < group.length; i++) {
+          for (let j = i + 1; j < group.length; j++) {
+            if (calcDistance(group[i].lat, group[i].lon, group[j].lat, group[j].lon) <= 200) {
+              anyNear = true;
+              break outer;
+            }
+          }
+        }
+        if (anyNear) {
+          result.push({ name: group[0].name, distance: group[0].distance, direction: group[0].direction, merged: true });
+        } else {
+          for (const s of group) {
+            result.push({ name: s.name, distance: s.distance, direction: s.direction, merged: false });
+          }
+        }
+      }
+
+      return result.sort((a, b) => a.distance - b.distance).slice(0, 3);
     }
 
     function renderStations(stations) {
@@ -560,6 +623,7 @@
         '<div class="bus-stop-item">'
         + '<div class="station-left">'
         + '<div class="station-name">' + esc(s.name) + '</div>'
+        + (s.merged ? '<div class="station-line">（複数停留所あり）</div>' : '')
         + '</div>'
         + '<div class="station-right">'
         + '<div class="station-distance">' + formatDist(s.distance) + '</div>'
@@ -580,11 +644,11 @@
 
       if (currentStations.length > 0) {
         const s0 = currentStations[0];
-        text += '最寄り駅は' + s0.name + '駅です。'
+        text += '最寄り駅は' + s0.name + 'です。'
           + s0.direction + '方向に約' + Math.round(s0.distance) + 'メートルです。';
         if (currentStations.length > 1) {
           const s1 = currentStations[1];
-          text += '次に近い駅は' + s1.name + '駅です。'
+          text += '次に近い駅は' + s1.name + 'です。'
             + s1.direction + '方向に約' + Math.round(s1.distance) + 'メートルです。';
         }
       }
