@@ -502,6 +502,13 @@
       if (!res.ok) throw new Error('Overpass error');
       const data = await res.json();
 
+      const nodeCount = data.elements.filter(el => el.type === 'node').length;
+      const relCount = data.elements.filter(el => el.type === 'relation').length;
+      console.log('[Overpass stations] nodes:', nodeCount, 'relations:', relCount);
+      if (relCount > 0) {
+        console.log('[Overpass stations] sample relation:', data.elements.find(el => el.type === 'relation'));
+      }
+
       // Build nodeId -> [line names] from route relations
       const linesByNode = {};
       for (const el of data.elements) {
@@ -517,19 +524,41 @@
         }
       }
 
-      return data.elements
+      // Map each node to a station object (lines as array for later merging)
+      const stationNodes = data.elements
         .filter(el => el.type === 'node' && el.tags && el.tags.name)
         .map(el => {
           const dist = calcDistance(lat, lng, el.lat, el.lon);
           const bearing = calcBearing(lat, lng, el.lat, el.lon);
-          const lines = linesByNode[el.id] || [];
+          const relLines = linesByNode[el.id] || [];
+          // Fallback to operator tag when no route relations found
+          const fallback = el.tags.operator || '';
           return {
             name: normalizeStationName(el.tags.name),
-            line: lines.join('・'),
+            lines: relLines.length > 0 ? relLines : (fallback ? [fallback] : []),
             distance: dist,
             direction: bearingToDirection(bearing)
           };
-        })
+        });
+
+      // Deduplicate by normalized name: keep closest, merge all line names
+      const grouped = {};
+      for (const s of stationNodes) {
+        if (!grouped[s.name]) {
+          grouped[s.name] = { ...s, lines: [...s.lines] };
+        } else {
+          for (const l of s.lines) {
+            if (!grouped[s.name].lines.includes(l)) grouped[s.name].lines.push(l);
+          }
+          if (s.distance < grouped[s.name].distance) {
+            grouped[s.name].distance = s.distance;
+            grouped[s.name].direction = s.direction;
+          }
+        }
+      }
+
+      return Object.values(grouped)
+        .map(s => ({ name: s.name, line: s.lines.join('・'), distance: s.distance, direction: s.direction }))
         .sort((a, b) => a.distance - b.distance)
         .slice(0, 3);
     }
