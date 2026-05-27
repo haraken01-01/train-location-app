@@ -140,10 +140,9 @@
       color: #3a5a7a;
     }
 
-    /* Station / bus-stop / landmark list containers */
+    /* Station / bus-stop list containers */
     #stations-list,
-    #busstops-list,
-    #landmarks-list {
+    #busstops-list {
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -167,16 +166,6 @@
       background: rgba(255,255,255,.05);
       border-radius: 10px;
       border-left: 3px solid #f0a030;
-    }
-
-    .landmark-item {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 12px;
-      background: rgba(255,255,255,.05);
-      border-radius: 10px;
-      border-left: 3px solid #9060d0;
     }
 
     .station-left {
@@ -316,13 +305,6 @@
       </div>
     </div>
 
-    <div class="info-section">
-      <div class="section-label">近くの目印</div>
-      <div id="landmarks-list">
-        <div class="station-status">検索中...</div>
-      </div>
-    </div>
-
     <div class="footer-row">
       <button id="speak-btn" onclick="speakAddress()">もう一度読み上げ</button>
     </div>
@@ -346,7 +328,6 @@
     let locationAcquiredAt = null;
     let currentStations = [];
     let currentBusStops = [];
-    let currentLandmarks = [];
     let elapsedTimer = null;
 
     function unlockSpeech() {
@@ -432,9 +413,6 @@
         '<div class="station-status">検索中...</div>';
       document.getElementById('busstops-list').innerHTML =
         '<div class="station-status">検索中...</div>';
-      document.getElementById('landmarks-list').innerHTML =
-        '<div class="station-status">検索中...</div>';
-
       updateAccuracyDisplay();
 
       if (elapsedTimer) clearInterval(elapsedTimer);
@@ -471,18 +449,7 @@
             '<div class="station-status">バス停の取得に失敗しました</div>';
         });
 
-      const landmarksPromise = getNearbyLandmarks(currentLat, currentLng)
-        .then(landmarks => {
-          currentLandmarks = landmarks;
-          renderLandmarks(landmarks);
-        })
-        .catch(() => {
-          currentLandmarks = [];
-          document.getElementById('landmarks-list').innerHTML =
-            '<div class="station-status">目印の取得に失敗しました</div>';
-        });
-
-      Promise.all([addressPromise, stationsPromise, busStopsPromise, landmarksPromise])
+      Promise.all([addressPromise, stationsPromise, busStopsPromise])
         .then(() => speakAddress());
     }
 
@@ -654,79 +621,6 @@
       return result.sort((a, b) => a.distance - b.distance).slice(0, 3);
     }
 
-    function getLandmarkType(tags) {
-      if (!tags) return null;
-      if (tags.tourism === 'information')    return { icon: 'ℹ️',  typeName: '観光案内所' };
-      if (tags.amenity === 'place_of_worship') return { icon: '⛩️', typeName: '神社・寺' };
-      if (tags.leisure === 'park')           return { icon: '🌳', typeName: '公園' };
-      if (tags.tourism === 'museum')         return { icon: '🏛️', typeName: '博物館' };
-      if (tags.amenity === 'toilets')        return { icon: '🚻', typeName: 'トイレ' };
-      if (tags.amenity === 'bus_station')    return { icon: '🚌', typeName: 'バス乗り場' };
-      return null;
-    }
-
-    async function getNearbyLandmarks(lat, lng) {
-      const around = '(around:500,' + lat + ',' + lng + ')';
-      const query = '[out:json][timeout:15];'
-        + '('
-        + 'node["tourism"="information"]' + around + ';'
-        + 'node["amenity"="place_of_worship"]' + around + ';'
-        + 'node["leisure"="park"]' + around + ';'
-        + 'way["leisure"="park"]' + around + ';'
-        + 'node["tourism"="museum"]' + around + ';'
-        + 'node["amenity"="toilets"]' + around + ';'
-        + 'node["amenity"="bus_station"]' + around + ';'
-        + 'way["amenity"="bus_station"]' + around + ';'
-        + ');'
-        + 'out center;';
-      const res = await fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'data=' + encodeURIComponent(query)
-      });
-      if (!res.ok) throw new Error('Overpass error');
-      const data = await res.json();
-
-      return data.elements
-        .map(el => {
-          const typeInfo = getLandmarkType(el.tags);
-          if (!typeInfo) return null;
-          const elLat = el.type === 'node' ? el.lat : (el.center ? el.center.lat : null);
-          const elLon = el.type === 'node' ? el.lon : (el.center ? el.center.lon : null);
-          if (elLat == null || elLon == null) return null;
-          const dist = calcDistance(lat, lng, elLat, elLon);
-          const bearing = calcBearing(lat, lng, elLat, elLon);
-          return {
-            name: (el.tags && el.tags.name) || typeInfo.typeName,
-            icon: typeInfo.icon,
-            distance: dist,
-            direction: bearingToDirection(bearing)
-          };
-        })
-        .filter(Boolean)
-        .sort((a, b) => a.distance - b.distance)
-        .slice(0, 3);
-    }
-
-    function renderLandmarks(landmarks) {
-      const list = document.getElementById('landmarks-list');
-      if (!landmarks.length) {
-        list.innerHTML = '<div class="station-status">近くに目印は見つかりませんでした</div>';
-        return;
-      }
-      list.innerHTML = landmarks.map(l =>
-        '<div class="landmark-item">'
-        + '<div class="station-left">'
-        + '<div class="station-name">' + esc(l.icon) + ' ' + esc(l.name) + '</div>'
-        + '</div>'
-        + '<div class="station-right">'
-        + '<div class="station-distance">' + formatDist(l.distance) + '</div>'
-        + '<div class="station-direction">' + l.direction + '</div>'
-        + '</div>'
-        + '</div>'
-      ).join('');
-    }
-
     function renderStations(stations) {
       const list = document.getElementById('stations-list');
       if (!stations.length) {
@@ -791,12 +685,6 @@
         const b0 = currentBusStops[0];
         text += '近くのバス停は' + b0.name + 'バス停です。'
           + b0.direction + '方向に約' + Math.round(b0.distance) + 'メートルです。';
-      }
-
-      if (currentLandmarks.length > 0) {
-        const l0 = currentLandmarks[0];
-        text += '近くの目印として、' + l0.direction + '方向に約' + Math.round(l0.distance)
-          + 'メートルに' + l0.name + 'があります。';
       }
 
       const u = new SpeechSynthesisUtterance(text);
