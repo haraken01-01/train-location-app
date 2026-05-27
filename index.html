@@ -123,8 +123,26 @@
       line-height: 1.5;
     }
 
-    /* Station list */
-    #stations-list {
+    /* Accuracy status row */
+    .accuracy-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    #accuracy-status {
+      font-size: .88rem;
+      font-weight: 700;
+    }
+
+    #acquired-time {
+      font-size: .73rem;
+      color: #3a5a7a;
+    }
+
+    /* Station / bus-stop list containers */
+    #stations-list,
+    #busstops-list {
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -138,6 +156,16 @@
       background: rgba(255,255,255,.05);
       border-radius: 10px;
       border-left: 3px solid #4a90d9;
+    }
+
+    .bus-stop-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 12px;
+      background: rgba(255,255,255,.05);
+      border-radius: 10px;
+      border-left: 3px solid #f0a030;
     }
 
     .station-left {
@@ -192,13 +220,8 @@
     .footer-row {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      justify-content: flex-end;
       padding: 0 2px;
-    }
-
-    #acquired-time {
-      font-size: .73rem;
-      color: #3a5a7a;
     }
 
     #speak-btn {
@@ -254,8 +277,17 @@
   <div id="gps-error" class="hidden"></div>
 
   <div id="info-card" class="hidden">
+
     <div class="info-section">
-      <div class="section-label">現在地</div>
+      <div class="section-label">位置情報の状態</div>
+      <div class="accuracy-row">
+        <span id="accuracy-status">—</span>
+        <span id="acquired-time"></span>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <div class="section-label" id="location-label">現在地</div>
       <div id="address-text">—</div>
     </div>
 
@@ -266,8 +298,14 @@
       </div>
     </div>
 
+    <div class="info-section">
+      <div class="section-label">近くのバス停</div>
+      <div id="busstops-list">
+        <div class="station-status">検索中...</div>
+      </div>
+    </div>
+
     <div class="footer-row">
-      <span id="acquired-time"></span>
       <button id="speak-btn" onclick="speakAddress()">もう一度読み上げ</button>
     </div>
 
@@ -286,12 +324,54 @@
     let currentAddress = '';
     let currentLat = null;
     let currentLng = null;
+    let currentAccuracy = null;
+    let locationAcquiredAt = null;
+    let currentStations = [];
+    let currentBusStops = [];
+    let elapsedTimer = null;
 
     function unlockSpeech() {
       if (!window.speechSynthesis) return;
       const u = new SpeechSynthesisUtterance('');
       u.volume = 0;
       window.speechSynthesis.speak(u);
+    }
+
+    function getAccuracyInfo(accuracy) {
+      if (accuracy === null || accuracy === undefined) {
+        return { label: '位置情報：不明', color: '#e05a5a', isUnstable: true };
+      }
+      if (accuracy < 30) {
+        return { label: '位置情報：良好', color: '#43b89c', isUnstable: false };
+      }
+      if (accuracy < 100) {
+        return { label: '位置情報：やや不安定', color: '#f0c040', isUnstable: false };
+      }
+      return { label: '位置情報：不安定', color: '#f08030', isUnstable: true };
+    }
+
+    function updateElapsedTime() {
+      if (!locationAcquiredAt) return;
+      const elapsed = Math.floor((Date.now() - locationAcquiredAt) / 1000);
+      let timeStr;
+      if (elapsed < 60) {
+        timeStr = 'たった今取得';
+      } else if (elapsed < 3600) {
+        timeStr = Math.floor(elapsed / 60) + '分前に取得';
+      } else {
+        timeStr = Math.floor(elapsed / 3600) + '時間前に取得';
+      }
+      document.getElementById('acquired-time').textContent = timeStr;
+    }
+
+    function updateAccuracyDisplay() {
+      const info = getAccuracyInfo(currentAccuracy);
+      const el = document.getElementById('accuracy-status');
+      el.textContent = info.label;
+      el.style.color = info.color;
+      document.getElementById('location-label').textContent =
+        info.isUnstable ? '最後に確認できた場所' : '現在地';
+      updateElapsedTime();
     }
 
     function getLocation() {
@@ -319,6 +399,8 @@
     function onGpsSuccess(pos) {
       currentLat = pos.coords.latitude;
       currentLng = pos.coords.longitude;
+      currentAccuracy = pos.coords.accuracy;
+      locationAcquiredAt = Date.now();
 
       const btn = document.getElementById('main-btn');
       btn.className = 'success';
@@ -329,27 +411,47 @@
       document.getElementById('address-text').textContent = '住所を取得中...';
       document.getElementById('stations-list').innerHTML =
         '<div class="station-status">検索中...</div>';
+      document.getElementById('busstops-list').innerHTML =
+        '<div class="station-status">検索中...</div>';
 
-      const now = new Date();
-      document.getElementById('acquired-time').textContent =
-        '取得時刻 ' + now.toLocaleTimeString('ja-JP');
+      updateAccuracyDisplay();
 
-      reverseGeocode(currentLat, currentLng)
+      if (elapsedTimer) clearInterval(elapsedTimer);
+      elapsedTimer = setInterval(updateElapsedTime, 30000);
+
+      const addressPromise = reverseGeocode(currentLat, currentLng)
         .then(addr => {
           currentAddress = addr;
           document.getElementById('address-text').textContent = addr;
-          speakAddress();
         })
         .catch(() => {
           document.getElementById('address-text').textContent = '住所の取得に失敗しました';
         });
 
-      getNearbyStations(currentLat, currentLng)
-        .then(renderStations)
+      const stationsPromise = getNearbyStations(currentLat, currentLng)
+        .then(stations => {
+          currentStations = stations;
+          renderStations(stations);
+        })
         .catch(() => {
+          currentStations = [];
           document.getElementById('stations-list').innerHTML =
             '<div class="station-status">最寄り駅の取得に失敗しました</div>';
         });
+
+      const busStopsPromise = getNearbyBusStops(currentLat, currentLng)
+        .then(stops => {
+          currentBusStops = stops;
+          renderBusStops(stops);
+        })
+        .catch(() => {
+          currentBusStops = [];
+          document.getElementById('busstops-list').innerHTML =
+            '<div class="station-status">バス停の取得に失敗しました</div>';
+        });
+
+      Promise.all([addressPromise, stationsPromise, busStopsPromise])
+        .then(() => speakAddress());
     }
 
     function onGpsError(err) {
@@ -399,12 +501,30 @@
           const dist = calcDistance(lat, lng, el.lat, el.lon);
           const bearing = calcBearing(lat, lng, el.lat, el.lon);
           const line = el.tags.operator || el.tags.network || el.tags['railway:line'] || '';
-          return {
-            name: el.tags.name,
-            line: line,
-            distance: dist,
-            direction: bearingToDirection(bearing)
-          };
+          return { name: el.tags.name, line, distance: dist, direction: bearingToDirection(bearing) };
+        })
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, 3);
+    }
+
+    async function getNearbyBusStops(lat, lng) {
+      const query = '[out:json][timeout:15];'
+        + 'node["highway"="bus_stop"](around:500,' + lat + ',' + lng + ');'
+        + 'out body;';
+      const res = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(query)
+      });
+      if (!res.ok) throw new Error('Overpass error');
+      const data = await res.json();
+
+      return data.elements
+        .filter(el => el.tags && el.tags.name)
+        .map(el => {
+          const dist = calcDistance(lat, lng, el.lat, el.lon);
+          const bearing = calcBearing(lat, lng, el.lat, el.lon);
+          return { name: el.tags.name, distance: dist, direction: bearingToDirection(bearing) };
         })
         .sort((a, b) => a.distance - b.distance)
         .slice(0, 3);
@@ -428,6 +548,58 @@
         + '</div>'
         + '</div>'
       ).join('');
+    }
+
+    function renderBusStops(stops) {
+      const list = document.getElementById('busstops-list');
+      if (!stops.length) {
+        list.innerHTML = '<div class="station-status">近くにバス停は見つかりませんでした</div>';
+        return;
+      }
+      list.innerHTML = stops.map(s =>
+        '<div class="bus-stop-item">'
+        + '<div class="station-left">'
+        + '<div class="station-name">' + esc(s.name) + '</div>'
+        + '</div>'
+        + '<div class="station-right">'
+        + '<div class="station-distance">' + formatDist(s.distance) + '</div>'
+        + '<div class="station-direction">' + s.direction + '</div>'
+        + '</div>'
+        + '</div>'
+      ).join('');
+    }
+
+    function speakAddress() {
+      if (!window.speechSynthesis) return;
+      window.speechSynthesis.cancel();
+
+      const info = getAccuracyInfo(currentAccuracy);
+      let text = info.isUnstable
+        ? '最後に確認できた場所の周辺情報です。情報が古い可能性があります。'
+        : '現在地の周辺情報です。';
+
+      if (currentStations.length > 0) {
+        const s0 = currentStations[0];
+        text += '最寄り駅は' + s0.name + '駅です。'
+          + s0.direction + '方向に約' + Math.round(s0.distance) + 'メートルです。';
+        if (currentStations.length > 1) {
+          const s1 = currentStations[1];
+          text += '次に近い駅は' + s1.name + '駅です。'
+            + s1.direction + '方向に約' + Math.round(s1.distance) + 'メートルです。';
+        }
+      }
+
+      if (currentBusStops.length > 0) {
+        const b0 = currentBusStops[0];
+        text += '近くのバス停は' + b0.name + 'バス停です。'
+          + b0.direction + '方向に約' + Math.round(b0.distance) + 'メートルです。';
+      }
+
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'ja-JP';
+      u.rate = 0.9;
+      u.pitch = 1.0;
+      window.speechSynthesis.speak(u);
     }
 
     function calcDistance(lat1, lng1, lat2, lng2) {
@@ -474,16 +646,6 @@
       } else {
         window.open('https://www.google.com/maps?q=' + currentLat + ',' + currentLng, '_blank');
       }
-    }
-
-    function speakAddress() {
-      if (!currentAddress || !window.speechSynthesis) return;
-      window.speechSynthesis.cancel();
-      var u = new SpeechSynthesisUtterance(currentAddress);
-      u.lang = 'ja-JP';
-      u.rate = 0.9;
-      u.pitch = 1.0;
-      window.speechSynthesis.speak(u);
     }
   </script>
 
